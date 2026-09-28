@@ -1,0 +1,18 @@
+cat < .gitignore
+# STM32CubeIDE Build Outputs
+Debug/
+Release/
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.o
+*.d
+*.su
+
+# IDE / System files
+.settings/
+*.launch
+.DS_Store
+EOT
