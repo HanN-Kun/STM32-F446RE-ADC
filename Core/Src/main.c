@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stdio.h"
+#include "string.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,6 +51,7 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 uint16_t adc_buffer[2];
 volatile uint8_t adc_ready = 0;
+volatile uint8_t awd_alarm = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -114,23 +116,38 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  if (adc_ready) {
-	          adc_ready = 0;
-	          uint16_t raw_ch0 = adc_buffer[0];
-	          uint16_t raw_ch1 = adc_buffer[1];
+	        adc_ready = 0;
 
-	          uint32_t mv_ch0 = (raw_ch0 * 3300) / 4095;
-	          uint32_t mv_ch1 = (raw_ch1 * 3300) / 4095;
+	        uint16_t raw_ch0 = adc_buffer[0];
+	        uint16_t raw_ch1 = adc_buffer[1];
 
-	          char msg[128];
-	          int len = snprintf(msg, sizeof(msg),
-	                             "CH0 (PA0): %4u (%4lu mV) | CH1 (PA1): %4u (%4lu mV)\r\n",
-	                             raw_ch0, (unsigned long)mv_ch0,
-	                             raw_ch1, (unsigned long)mv_ch1);
+	        uint32_t mv_ch0 = (raw_ch0 * 3300) / 4095;
+	        uint32_t mv_ch1 = (raw_ch1 * 3300) / 4095;
 
-	          HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
+	        char msg[160];
 
-  }
-  /* USER CODE END 3 */
+	        // Analog Watchdog Durum Kontrolü
+	        if (awd_alarm) {
+	            awd_alarm = 0; // Bayrağı temizle
+
+	            // Kart üzerindeki dahili yeşil LED'i yak (PA5)
+	            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+
+	            snprintf(msg, sizeof(msg),
+	                     "CH0 (PA0): %4u (%4lu mV) [ALARM: Voltaj Sınır Dışında!] | CH1 (PA1): %4u (%4lu mV)\r\n",
+	                     raw_ch0, (unsigned long)mv_ch0, raw_ch1, (unsigned long)mv_ch1);
+	        } else {
+	            // Normal Durum: Dahili yeşil LED'i söndür (PA5)
+	            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+
+	            snprintf(msg, sizeof(msg),
+	                     "CH0 (PA0): %4u (%4lu mV) [NORMAL] | CH1 (PA1): %4u (%4lu mV)\r\n",
+	                     raw_ch0, (unsigned long)mv_ch0, raw_ch1, (unsigned long)mv_ch1);
+	        }
+
+	        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+	 /* USER CODE END 3 */
+	  }
 }
 }
 /**
@@ -186,6 +203,7 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 0 */
 
+  ADC_AnalogWDGConfTypeDef AnalogWDGConfig = {0};
   ADC_ChannelConfTypeDef sConfig = {0};
 
   /* USER CODE BEGIN ADC1_Init 1 */
@@ -207,6 +225,18 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the analog watchdog
+  */
+  AnalogWDGConfig.WatchdogMode = ADC_ANALOGWATCHDOG_SINGLE_REG;
+  AnalogWDGConfig.HighThreshold = 3100;
+  AnalogWDGConfig.LowThreshold = 1240;
+  AnalogWDGConfig.Channel = ADC_CHANNEL_0;
+  AnalogWDGConfig.ITMode = ENABLE;
+  if (HAL_ADC_AnalogWDGConfig(&hadc1, &AnalogWDGConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -336,12 +366,23 @@ static void MX_DMA_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : PA5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -353,6 +394,12 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance == ADC1) {
         adc_ready = 1;
+    }
+}
+void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance == ADC1) {
+        awd_alarm = 1;
     }
 }
 /* USER CODE END 4 */
