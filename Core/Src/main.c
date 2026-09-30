@@ -42,6 +42,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc2;
 DMA_HandleTypeDef hdma_adc1;
 
 DAC_HandleTypeDef hdac;
@@ -53,8 +54,9 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 #define FILTER_DEPTH 10
 
-uint16_t adc_buffer[2];
-
+uint32_t dual_adc_raw = 0;
+uint16_t adc1_raw = 0;
+uint16_t adc2_raw = 0;
 uint16_t filter_buf_ch0[FILTER_DEPTH] = {0};
 uint16_t filter_buf_ch1[FILTER_DEPTH] = {0};
 uint8_t filter_idx = 0;
@@ -74,6 +76,7 @@ static void MX_ADC1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_DAC_Init(void);
+static void MX_ADC2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -84,13 +87,26 @@ uint32_t Apply_Moving_Average(uint16_t new_sample, uint16_t *buffer, uint8_t ind
 {
   buffer[index] = new_sample;
   uint32_t sum = 0;
-
   for (uint8_t i = 0; i < FILTER_DEPTH; i++)
   {
     sum += buffer[i];
   }
-
   return (sum / FILTER_DEPTH);
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+  if (hadc->Instance == ADC1)
+  {
+    adc_ready = 1;
+  }
+}
+void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef* hadc)
+{
+  if (hadc->Instance == ADC1)
+  {
+    awd_alarm = 1;
+  }
 }
 /* USER CODE END 0 */
 
@@ -128,12 +144,12 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_DAC_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_Base_Start(&htim2);
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 2);
+  HAL_ADC_Start(&hadc2);
+  HAL_ADCEx_MultiModeStart_DMA(&hadc1, &dual_adc_raw, 1);
   HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
-  uint32_t dac_val = 1861;
-  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_val);
+  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 1861);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -147,12 +163,13 @@ int main(void)
 	      {
 	        adc_ready = 0;
 
-	        // 1. Filtre hesaplama
-	        filtered_ch0 = Apply_Moving_Average(adc_buffer[0], filter_buf_ch0, filter_idx);
-	        filtered_ch1 = Apply_Moving_Average(adc_buffer[1], filter_buf_ch1, filter_idx);
+	        adc1_raw = (uint16_t)(dual_adc_raw & 0xFFFF);
+	        adc2_raw = (uint16_t)((dual_adc_raw >> 16) & 0xFFFF);
+
+	        filtered_ch0 = Apply_Moving_Average(adc1_raw, filter_buf_ch0, filter_idx);
+	        filtered_ch1 = Apply_Moving_Average(adc2_raw, filter_buf_ch1, filter_idx);
 
 	        filter_idx = (filter_idx + 1) % FILTER_DEPTH;
-
 	        filtered_mv_ch0 = (filtered_ch0 * 3300) / 4095;
 	        filtered_mv_ch1 = (filtered_ch1 * 3300) / 4095;
 
@@ -164,18 +181,18 @@ int main(void)
 	          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
 
 	          snprintf(msg, sizeof(msg),
-	                   "CH0 RAW: %u | CH0 FILT: %u (%lu mV) [ALARM] | CH1 FILT: %u (%lu mV)\r\n",
-	                   adc_buffer[0], (unsigned int)filtered_ch0, (unsigned long)filtered_mv_ch0,
-	                   adc_buffer[1], (unsigned long)filtered_mv_ch1);
+	                   "[DUAL] ADC1 RAW: %u | ADC1 FILT: %u (%lu mV) [ALARM] | ADC2 RAW: %u | ADC2 FILT: %u (%lu mV)\r\n",
+	                   adc1_raw, (unsigned int)filtered_ch0, (unsigned long)filtered_mv_ch0,
+	                   adc2_raw, (unsigned int)filtered_ch1, (unsigned long)filtered_mv_ch1);
 	        }
 	        else
 	        {
 	          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
 
 	          snprintf(msg, sizeof(msg),
-	                   "CH0 RAW: %u | CH0 FILT: %u (%lu mV) [NORMAL] | CH1 FILT: %u (%lu mV)\r\n",
-	                   adc_buffer[0], (unsigned int)filtered_ch0, (unsigned long)filtered_mv_ch0,
-	                   adc_buffer[1], (unsigned long)filtered_mv_ch1);
+	                   "[DUAL] ADC1 RAW: %u | ADC1 FILT: %u (%lu mV) [NORMAL] | ADC2 RAW: %u | ADC2 FILT: %u (%lu mV)\r\n",
+	                   adc1_raw, (unsigned int)filtered_ch0, (unsigned long)filtered_mv_ch0,
+	                   adc2_raw, (unsigned int)filtered_ch1, (unsigned long)filtered_mv_ch1);
 	        }
 
 	        HAL_UART_Transmit(&huart2, (uint8_t*)msg, (uint16_t)strlen(msg), HAL_MAX_DELAY);
@@ -239,6 +256,7 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 0 */
 
+  ADC_MultiModeTypeDef multimode = {0};
   ADC_AnalogWDGConfTypeDef AnalogWDGConfig = {0};
   ADC_ChannelConfTypeDef sConfig = {0};
 
@@ -251,16 +269,26 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ScanConvMode = DISABLE;
   hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the ADC multi-mode
+  */
+  multimode.Mode = ADC_DUALMODE_REGSIMULT;
+  multimode.DMAAccessMode = ADC_DMAACCESSMODE_2;
+  multimode.TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_5CYCLES;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
   {
     Error_Handler();
   }
@@ -286,18 +314,59 @@ static void MX_ADC1_Init(void)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief ADC2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC2_Init(void)
+{
+
+  /* USER CODE BEGIN ADC2_Init 0 */
+
+  /* USER CODE END ADC2_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC2_Init 1 */
+
+  /* USER CODE END ADC2_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc2.Instance = ADC2;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc2.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc2.Init.ScanConvMode = DISABLE;
+  hadc2.Init.ContinuousConvMode = ENABLE;
+  hadc2.Init.DiscontinuousConvMode = DISABLE;
+  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc2.Init.NbrOfConversion = 1;
+  hadc2.Init.DMAContinuousRequests = DISABLE;
+  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc2) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
   sConfig.Channel = ADC_CHANNEL_1;
-  sConfig.Rank = 2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_84CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN ADC1_Init 2 */
+  /* USER CODE BEGIN ADC2_Init 2 */
 
-  /* USER CODE END ADC1_Init 2 */
+  /* USER CODE END ADC2_Init 2 */
 
 }
 
@@ -466,21 +535,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-  if (hadc->Instance == ADC1)
-  {
-    adc_ready = 1;
-  }
-}
 
-void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *hadc)
-{
-  if (hadc->Instance == ADC1)
-  {
-    awd_alarm = 1;
-  }
-}
 /* USER CODE END 4 */
 
 /**
