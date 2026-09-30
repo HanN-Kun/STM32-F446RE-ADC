@@ -51,7 +51,17 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+#define FILTER_DEPTH 10
+
 uint16_t adc_buffer[2];
+
+uint16_t filter_buf_ch0[FILTER_DEPTH] = {0};
+uint16_t filter_buf_ch1[FILTER_DEPTH] = {0};
+uint8_t filter_idx = 0;
+uint32_t filtered_ch0 = 0;
+uint32_t filtered_ch1 = 0;
+uint32_t filtered_mv_ch0 = 0;
+uint32_t filtered_mv_ch1 = 0;
 volatile uint8_t adc_ready = 0;
 volatile uint8_t awd_alarm = 0;
 /* USER CODE END PV */
@@ -70,7 +80,18 @@ static void MX_DAC_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint32_t Apply_Moving_Average(uint16_t new_sample, uint16_t *buffer, uint8_t index)
+{
+  buffer[index] = new_sample;
+  uint32_t sum = 0;
 
+  for (uint8_t i = 0; i < FILTER_DEPTH; i++)
+  {
+    sum += buffer[i];
+  }
+
+  return (sum / FILTER_DEPTH);
+}
 /* USER CODE END 0 */
 
 /**
@@ -122,42 +143,49 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if (adc_ready) {
+	  if (adc_ready)
+	      {
 	        adc_ready = 0;
 
-	        uint16_t raw_ch0 = adc_buffer[0];
-	        uint16_t raw_ch1 = adc_buffer[1];
+	        // 1. Filtre hesaplama
+	        filtered_ch0 = Apply_Moving_Average(adc_buffer[0], filter_buf_ch0, filter_idx);
+	        filtered_ch1 = Apply_Moving_Average(adc_buffer[1], filter_buf_ch1, filter_idx);
 
-	        uint32_t mv_ch0 = (raw_ch0 * 3300) / 4095;
-	        uint32_t mv_ch1 = (raw_ch1 * 3300) / 4095;
+	        filter_idx = (filter_idx + 1) % FILTER_DEPTH;
 
-	        char msg[160];
+	        filtered_mv_ch0 = (filtered_ch0 * 3300) / 4095;
+	        filtered_mv_ch1 = (filtered_ch1 * 3300) / 4095;
 
-	        // Analog Watchdog Durum Kontrolü
-	        if (awd_alarm) {
-	            awd_alarm = 0; // Bayrağı temizle
+	        char msg[200];
 
-	            // Kart üzerindeki dahili yeşil LED'i yak (PA5)
-	            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+	        if (awd_alarm)
+	        {
+	          awd_alarm = 0;
+	          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
 
-	            snprintf(msg, sizeof(msg),
-	                     "CH0 (PA0): %4u (%4lu mV) [ALARM: Voltaj Sınır Dışında!] | CH1 (PA1): %4u (%4lu mV)\r\n",
-	                     raw_ch0, (unsigned long)mv_ch0, raw_ch1, (unsigned long)mv_ch1);
-	        } else {
-	            // Normal Durum: Dahili yeşil LED'i söndür (PA5)
-	            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+	          snprintf(msg, sizeof(msg),
+	                   "CH0 RAW: %u | CH0 FILT: %u (%lu mV) [ALARM] | CH1 FILT: %u (%lu mV)\r\n",
+	                   adc_buffer[0], (unsigned int)filtered_ch0, (unsigned long)filtered_mv_ch0,
+	                   adc_buffer[1], (unsigned long)filtered_mv_ch1);
+	        }
+	        else
+	        {
+	          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
 
-	            snprintf(msg, sizeof(msg),
-	                     "CH0 (PA0): %4u (%4lu mV) [NORMAL] | CH1 (PA1): %4u (%4lu mV)\r\n",
-	                     raw_ch0, (unsigned long)mv_ch0, raw_ch1, (unsigned long)mv_ch1);
+	          snprintf(msg, sizeof(msg),
+	                   "CH0 RAW: %u | CH0 FILT: %u (%lu mV) [NORMAL] | CH1 FILT: %u (%lu mV)\r\n",
+	                   adc_buffer[0], (unsigned int)filtered_ch0, (unsigned long)filtered_mv_ch0,
+	                   adc_buffer[1], (unsigned long)filtered_mv_ch1);
 	        }
 
-	        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-	  }
-  /* USER CODE END 3 */
+	        HAL_UART_Transmit(&huart2, (uint8_t*)msg, (uint16_t)strlen(msg), HAL_MAX_DELAY);
 
+	        HAL_Delay(200);
+	      }
+	    }
+  /* USER CODE END 3 */
 }
-}
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -224,10 +252,10 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T2_TRGO;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 2;
   hadc1.Init.DMAContinuousRequests = ENABLE;
@@ -440,15 +468,18 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
-    if (hadc->Instance == ADC1) {
-        adc_ready = 1;
-    }
+  if (hadc->Instance == ADC1)
+  {
+    adc_ready = 1;
+  }
 }
+
 void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef *hadc)
 {
-    if (hadc->Instance == ADC1) {
-        awd_alarm = 1;
-    }
+  if (hadc->Instance == ADC1)
+  {
+    awd_alarm = 1;
+  }
 }
 /* USER CODE END 4 */
 
